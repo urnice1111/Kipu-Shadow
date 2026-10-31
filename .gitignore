@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+#md for coding instructions
+INSTRUCTIONS.md
+
 # Distribution / packaging
 .Python
 build/
@@ -218,3 +221,20 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Kipu Shadow: corpus, tokens, and generated output stay local
+.env
+.env.*
+!.env.example
+data/
+raw/
+fuentes/
+sample/
+output/
+output_staging/
+logs/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+sample.zip
