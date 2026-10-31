@@ -71,7 +71,7 @@ def test_pdf_doc(corpus):
     assert doc["title"] == "Carta de cobro"
     assert doc["metadata"]["author"] == "Ana Ruiz"
     assert doc["metadata"]["keywords"] == "cobro"
-    assert "Señor Juan Pérez, cédula 1010." in doc["body"]
+    assert "Señor Juan Pérez, cédula 10101010." in doc["body"]
     assert all(isinstance(v, str) and v for v in doc["metadata"].values())
 
 
@@ -82,7 +82,7 @@ def test_tables(corpus):
     assert row["columns"] == {
         "cliente_id": "CL-1",
         "nombre_completo": "Juan Pérez",
-        "num_doc": "1010",
+        "num_doc": "10101010",
         "ciudad": "Bogotá",
         "notas": "cliente desde 2020",
     }
@@ -93,7 +93,7 @@ def test_tables(corpus):
         "cargo": "Agente",
         "reporta_a": "Ana Ruiz",
         "nombre": "Laura Gómez",
-        "documento": "222",
+        "documento": "52222222",
         "documento_tipo": "CE",
     }
     assert all(isinstance(v, str) for r in corpus.tables for v in r["columns"].values())

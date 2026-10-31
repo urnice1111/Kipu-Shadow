@@ -106,8 +106,8 @@ HTML = """<!DOCTYPE html>
 
 CLIENTES = (
     "cliente_id;nombre_completo;num_doc;ciudad;notas\r\n"
-    "CL-1;Juan Pérez;1010;Bogotá;cliente desde 2020\r\n"
-    "CL-2;María Gómez;2020;Cali;\r\n"
+    "CL-1;Juan Pérez;10101010;Bogotá;cliente desde 2020\r\n"
+    "CL-2;María Gómez;20202020;Cali;\r\n"
 )
 
 EMPLEADOS = """<?xml version="1.0" encoding="UTF-8"?>
@@ -115,11 +115,11 @@ EMPLEADOS = """<?xml version="1.0" encoding="UTF-8"?>
   <!-- comentario -->
   <empleado id="KP-1" cargo="CEO" reporta_a="">
     <nombre>Ana Ruiz</nombre>
-    <documento tipo="CC">111</documento>
+    <documento tipo="CC">41111111</documento>
   </empleado>
   <empleado id="KP-2" cargo="Agente" reporta_a="Ana Ruiz">
     <nombre>Laura Gómez</nombre>
-    <documento tipo="CE">222</documento>
+    <documento tipo="CE">52222222</documento>
   </empleado>
 </empleados>
 """
@@ -129,7 +129,7 @@ def make_pdf() -> bytes:
     doc = pymupdf.open()
     page = doc.new_page()
     page.insert_text((72, 72), "Carta de cobro")
-    page.insert_text((72, 100), "Señor Juan Pérez, cédula 1010.")
+    page.insert_text((72, 100), "Señor Juan Pérez, cédula 10101010.")
     doc.set_metadata({"title": "Carta de cobro", "author": "Ana Ruiz", "keywords": "cobro"})
     data = doc.tobytes()
     doc.close()

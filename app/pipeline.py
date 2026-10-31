@@ -1,11 +1,21 @@
+import json
+import logging
+import pickle
 import shutil
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.config import OUTPUT_FILES
-from app.ingestion import check_ids, ingest, write_corpus
+from app.config import OUTPUT_FILES, Settings
+from app.core.anonymize import anonymize_corpus, prepare_engine
+from app.core.audit import audit, scrub
+from app.core.entities import build_entities
+from app.core.registry import Registry
+from app.ingestion import Corpus, check_ids, ingest, write_corpus
 from app.ingestion.client import ApiSource
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -26,16 +36,60 @@ class PipelineIncomplete(NotImplementedError):
 Pipeline = Callable[[str, str, Path], RunResult]
 
 
-def run_pipeline(sources_url: str, token: str, staging_dir: Path) -> RunResult:
-    source = ApiSource(sources_url, token)
-    try:
-        corpus = ingest(source)
-    finally:
-        source.close()
-    check_ids(corpus)
-    write_corpus(corpus, staging_dir)
-    raise PipelineIncomplete(
-        "anonimización no implementada (Hitos 3-5)", RunResult(records=corpus.counts())
+def state_path(settings: Settings) -> Path:
+    return settings.data_dir / "state.pkl"
+
+
+def make_pipeline(settings: Settings, registry: Registry) -> Pipeline:
+    """Full run: ingest, resolve identities, replace, audit, write staging, save live state."""
+
+    def run(sources_url: str, token: str, staging_dir: Path) -> RunResult:
+        start = time.monotonic()
+        source = ApiSource(sources_url, token)
+        try:
+            corpus = ingest(source)
+        finally:
+            source.close()
+        check_ids(corpus)
+        log.info("ingesta: %s en %.1fs", corpus.counts(), time.monotonic() - start)
+
+        engine = prepare_engine(corpus, registry)
+        outputs = anonymize_corpus(engine, corpus)
+        entities = build_entities(engine)
+        report = audit(outputs, entities)
+        if report.leaks:
+            fixed = scrub(outputs, report, entities)
+            log.warning("auditor: %d fugas, %d reemplazos de último recurso", len(report.leaks), fixed)
+            report = audit(outputs, entities)
+        log.info(
+            "auditor: %d formas revisadas, %d fugas, %d seudónimos sin uso",
+            report.checked_forms, len(report.leaks), len(report.unused_pseudonyms),
+        )
+
+        out = Corpus(chats=outputs["chats"], docs=outputs["docs"], tables=outputs["tables"], index=corpus.index)
+        check_ids(out)
+        write_corpus(out, staging_dir, entities)
+        save_state(settings, engine, report)
+        log.info("corrida completa en %.1fs", time.monotonic() - start)
+        return RunResult(records=corpus.counts())
+
+    return run
+
+
+def save_state(settings: Settings, engine, report) -> None:
+    """Directory of known people for /anonymize. Contains real data: stays in data/, never published."""
+    path = state_path(settings)
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "wb") as f:
+        pickle.dump({"directory": engine.d, "barrios": engine.barrios_by_city}, f)
+    tmp.replace(path)
+    (settings.data_dir / "last_audit.json").write_text(
+        json.dumps(
+            {"leaks": report.leaks, "unused_pseudonyms": report.unused_pseudonyms, "checked_forms": report.checked_forms},
+            ensure_ascii=False,
+            indent=1,
+        ),
+        encoding="utf-8",
     )
 
 

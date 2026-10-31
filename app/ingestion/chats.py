@@ -65,7 +65,20 @@ def build_chat_records(
     return records
 
 
-def read_chats(source: Source) -> list[dict]:
+def chat_meta(messages: dict[str, list[dict]]) -> dict[str, dict]:
+    """Per record id: the author uid and mentioned uids, which the normalized record drops."""
+    meta = {}
+    for msgs in messages.values():
+        for m in msgs:
+            meta[m["client_msg_id"]] = {
+                "uid": m.get("user", ""),
+                "bot": m.get("subtype") == "bot_message",
+                "mentions": MENTION.findall(m.get("text") or ""),
+            }
+    return meta
+
+
+def read_chats(source: Source) -> tuple[list[dict], list[dict], dict[str, dict]]:
     channels = source.json("/chats/channels")
     users = source.json("/chats/users")
     messages: dict[str, list[dict]] = {}
@@ -74,4 +87,4 @@ def read_chats(source: Source) -> list[dict]:
         messages[name] = []
         for date in source.json(f"/chats/{name}"):
             messages[name].extend(source.json(f"/chats/{name}/{date}"))
-    return build_chat_records(channels, users, messages)
+    return build_chat_records(channels, users, messages), users, chat_meta(messages)

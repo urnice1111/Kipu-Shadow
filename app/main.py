@@ -1,10 +1,14 @@
+import logging
+
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
 from app.config import TEAM, VERSION, Settings, get_settings
+from app.core.registry import Registry
 from app.jobs import JobRunner
-from app.pipeline import Pipeline, published_file, run_pipeline
+from app.live import LiveService
+from app.pipeline import Pipeline, make_pipeline, published_file
 from app.schemas import (
     RECORD_MODELS,
     AnonymizeRequest,
@@ -22,8 +26,15 @@ MEDIA_TYPES = {
 
 
 def create_app(settings: Settings | None = None, pipeline: Pipeline | None = None) -> FastAPI:
+    if not logging.getLogger("app").handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger("app").addHandler(handler)
+        logging.getLogger("app").setLevel(logging.INFO)
     settings = settings or get_settings()
-    runner = JobRunner(settings, pipeline or run_pipeline)
+    registry = Registry(settings.data_dir / "pseudonyms.db")
+    runner = JobRunner(settings, pipeline or make_pipeline(settings, registry))
+    live = LiveService(settings, registry)
     router = APIRouter(prefix="/v1")
 
     @router.get("/health", response_model=Health)
@@ -67,7 +78,8 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                     errors.append({**err, "loc": ["body", "records", i, *err["loc"]]})
         if errors:
             raise HTTPException(422, errors)
-        return AnonymizeResponse(records=records, entities=[])
+        out, entities = live.anonymize(body.source, records)
+        return AnonymizeResponse(records=out, entities=entities)
 
     app = FastAPI(title="Kipu Shadow", version=VERSION)
     app.include_router(router)

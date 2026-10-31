@@ -21,6 +21,8 @@ class Corpus:
     docs: list[dict] = field(default_factory=list)
     tables: list[dict] = field(default_factory=list)
     index: dict[str, list[str]] = field(default_factory=dict)
+    users: list[dict] = field(default_factory=list)
+    chat_meta: dict[str, dict] = field(default_factory=dict)
 
     def counts(self) -> dict[str, int]:
         return {s: len(getattr(self, s)) for s in SOURCES}
@@ -28,11 +30,14 @@ class Corpus:
 
 def ingest(source: Source) -> Corpus:
     index = source.json("/record_index")
+    chats, users, meta = read_chats(source)
     return Corpus(
-        chats=read_chats(source),
+        chats=chats,
         docs=read_docs(source),
         tables=read_tables(source, index.get("tables", [])),
         index=index,
+        users=users,
+        chat_meta=meta,
     )
 
 

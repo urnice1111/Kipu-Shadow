@@ -46,7 +46,7 @@ def test_health(client):
     assert r.json() == {"status": "ok", "team": "Kipu Shadow", "version": "0.1.0", "models": []}
 
 
-def test_run_ingests_but_does_not_publish(client, corpus_dir, settings, monkeypatch):
+def test_run_publishes_anonymized_output(client, corpus_dir, settings, monkeypatch):
     seen = {}
 
     def fake_api(url, token):
@@ -57,17 +57,18 @@ def test_run_ingests_but_does_not_publish(client, corpus_dir, settings, monkeypa
     r = client.post("/v1/run", json=RUN_BODY)
     assert r.status_code == 202
     job_id = r.json()["job_id"]
-    body = wait_for(client, job_id)
+    body = wait_for(client, job_id, timeout=30)
     assert seen["args"] == (RUN_BODY["sources_url"], RUN_BODY["token"])
-    assert body["status"] == "failed"
-    assert "anonimización no implementada" in body["error"]
+    assert body["status"] == "done", body
     assert body["records"] == {"chats": 5, "docs": 3, "tables": 4}
-    assert body["started_at"] and body["finished_at"]
-    assert set(body["cost"]) == {"tokens_in", "tokens_out", "seconds"}
     assert RUN_BODY["token"] not in client.get(f"/v1/run/{job_id}").text
-    assert client.get("/v1/output/chats.jsonl").status_code == 404
+    published = "".join(client.get(f"/v1/output/{n}").text for n in ("chats.jsonl", "docs.jsonl", "tables.jsonl"))
+    for real in ("Juan Pérez", "Laura Gómez", "Ana Ruiz", "juan_perez", "10101010", "ana@example.test"):
+        assert real not in published
+    assert "$250.000" in published
+    ents = client.get("/v1/entities").json()["entities"]
+    assert any(e["type"] == "person" and "Juan Pérez" in e["originals"] for e in ents)
     assert not settings.staging_dir.exists()
-    assert not settings.output_dir.exists()
 
 
 def test_run_error_redacts_token(make_client):
@@ -165,7 +166,33 @@ def test_anonymize_keeps_ids_and_order_per_source(client):
         assert r.status_code == 200, r.text
         body = r.json()
         assert [x["id"] for x in body["records"]] == [x["id"] for x in records]
-        assert body["entities"] == []
+        assert "Juan Pérez" not in json.dumps(body["records"], ensure_ascii=False)
+
+
+def test_anonymize_replaces_consistently_after_run(client, corpus_dir, monkeypatch):
+    monkeypatch.setattr(pipeline, "ApiSource", lambda url, token: DirSource(corpus_dir))
+    assert wait_for(client, client.post("/v1/run", json=RUN_BODY).json()["job_id"], timeout=30)["status"] == "done"
+    published = [json.loads(l) for l in client.get("/v1/output/chats.jsonl").text.splitlines()]
+    juan_pseudo = next(r["author"] for r in published if r["id"] == "m2")
+
+    new = {**CHAT, "id": "live-1", "author": "Juan Pérez", "text": "Hola, soy Juan Pérez otra vez, sigo con el cobro de $250.000."}
+    body = client.post("/v1/anonymize", json={"source": "chats", "records": [new]}).json()
+    rec = body["records"][0]
+    assert rec["author"] == juan_pseudo
+    assert juan_pseudo in rec["text"] and "Juan Pérez" not in rec["text"]
+    assert "$250.000" in rec["text"]
+    person = next(e for e in body["entities"] if e["type"] == "person")
+    assert person["records"] == ["live-1"]
+    assert person["pseudonyms"]["name"] == juan_pseudo
+
+
+def test_anonymize_new_person_gets_new_pseudonym(client):
+    a = {**CHAT, "id": "x1", "author": "Rosalía Quintana", "text": "Soy Rosalía Quintana, nueva clienta."}
+    b = {**CHAT, "id": "x2", "author": "Hernán Quintana", "text": "Soy Hernán Quintana."}
+    body = client.post("/v1/anonymize", json={"source": "chats", "records": [a, b]}).json()
+    authors = [r["author"] for r in body["records"]]
+    assert authors[0] != authors[1]
+    assert "Quintana" not in json.dumps(body["records"], ensure_ascii=False)
 
 
 def test_anonymize_accepts_fifty_rejects_fiftyone(client):
