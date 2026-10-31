@@ -138,6 +138,7 @@ class Directory:
         self.ambiguous_cedulas: set[str] = set()
         self.by_token: dict[str, set[str]] = defaultdict(set)
         self.by_txday: dict[str, list[tuple[str, str, frozenset]]] = defaultdict(list)
+        self.occupation: dict[str, str] = {}
 
     # --- building -----------------------------------------------------------------------
 
@@ -205,6 +206,8 @@ class Directory:
             person.births.add(cols["fecha_nacimiento"])
         person = self.add(person)
         self.by_clid[clid] = person.pid
+        if cols.get("ocupacion"):
+            self.occupation[person.pid] = cols["ocupacion"]
         return person
 
     def add_employee_row(self, row_id: str, cols: dict[str, str]) -> Person:

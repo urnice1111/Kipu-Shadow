@@ -94,6 +94,8 @@ OCCUPATION_SECTOR = {
     "comerciante": "profesional del comercio",
     "community manager": "profesional de medios",
     "conductor de plataforma": "profesional del transporte",
+    "conductor": "profesional del transporte",
+    "conductora": "profesional del transporte",
     "contador": "profesional de finanzas",
     "contadora": "profesional de finanzas",
     "diseñador gráfico": "profesional de las industrias creativas",

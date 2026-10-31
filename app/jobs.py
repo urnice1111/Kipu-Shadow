@@ -133,6 +133,9 @@ class JobRunner:
         target = self.settings.log_dir / "runs" / f"{_now().replace(':', '')}_{job_id}"
         try:
             shutil.copytree(self.settings.output_dir, target)
+            audit = self.settings.data_dir / "last_audit.json"
+            if audit.is_file():
+                shutil.copy2(audit, target / "last_audit.json")
         except OSError as exc:
             log.warning("no se pudo archivar la salida de %s: %s", job_id, exc)
 

@@ -265,12 +265,16 @@ def _client_row(engine: Engine, row_id: str, cols: dict) -> dict:
         options = sorted(engine.barrios_by_city.get(city, set()) - {cols["barrio"]})
         if options:
             cols["barrio"] = engine.r.get(engine.uid(pid), "barrio", lambda rng, a: rng.choice(options), unique=False)
-    if cols.get("ocupacion"):
-        cols["ocupacion"] = SECTOR_BY_FOLD.get(fold(cols["ocupacion"]).strip(), "profesional independiente")
+    occupation = cols.get("ocupacion", "")
+    if occupation:
+        cols["ocupacion"] = SECTOR_BY_FOLD.get(fold(occupation).strip(), "profesional independiente")
     if cols.get("notas"):
         # The row itself carries city and join date, so any occupation in the notes completes the triple.
         nctx = Ctx(row_id).push(pid, *engine.d.pids_in_text(cols["notas"]))
-        cols["notas"] = engine.generalize(engine.text(cols["notas"], nctx), location_hint=True, city=cols.get("ciudad"))
+        cols["notas"] = engine.generalize(
+            engine.text(cols["notas"], nctx), location_hint=True, city=cols.get("ciudad"), notes=True,
+            own_occupation=occupation,
+        )
     return cols
 
 

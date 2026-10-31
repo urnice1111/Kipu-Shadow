@@ -327,7 +327,9 @@ class Engine:
         upper = surface[:1].isupper()
         owners = {c[0] for c in cands}
         if len(owners) >= 2 and text:
-            pid = self._evidence_owner(text, start, end, owners) if len(key) >= 2 else None
+            pid = None
+            if len(key) >= 2:
+                pid = self._evidence_owner(text, start, end, owners) or self._occupation_owner(text, start, end, owners)
             if pid:
                 c = next(c for c in cands if c[0] == pid)
                 return c[0], c[1], c[2]
@@ -392,6 +394,27 @@ class Engine:
             if ranked and (len(ranked) == 1 or ranked[0][1] < ranked[1][1]):
                 return ranked[0][0]
         return None
+
+    def _occupation_owner(self, text: str, start: int, end: int, owners: set[str]) -> str | None:
+        """The only candidate whose occupation (or its sector) is named next to the mention."""
+        known = getattr(self.d, "occupation", {})
+        if not detect.OCCUPATIONS or not any(pid in known for pid in owners):
+            return None
+        lo, hi = max(0, start - 120), min(len(text), end + 120)
+        para = text.rfind("\n\n", lo, start)
+        lo = para if para != -1 else lo
+        para = text.find("\n\n", end, hi)
+        hi = para if para != -1 else hi
+        sector_by_fold = {fold(k): v for k, v in OCCUPATION_SECTOR.items()}
+        named = {" ".join(m.group(0).split()) for m in detect.OCCUPATIONS.finditer(fold(text[lo:hi]))}
+        if not named:
+            return None
+        sectors = {sector_by_fold[n] for n in named}
+        matches = [
+            pid for pid in owners
+            if pid in known and (fold(known[pid]) in named or sector_by_fold.get(fold(known[pid])) in sectors)
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     def _resolve_initial(self, m: re.Match, ctx: Ctx):
         """Owner of "M. Jiménez": a person in context, else the only person with that initial and surname."""
@@ -549,12 +572,33 @@ class Engine:
             or (self.barrio_rx and any(text[m.start()].isupper() for m in self.barrio_rx.finditer(folded)))
         )
 
-    def generalize(self, text: str, location_hint: bool = False, city: str | None = None) -> str:
-        """Break occupation + place + year combinations: occupation to sector, barrio to city, year vague."""
+    def generalize(
+        self,
+        text: str,
+        location_hint: bool = False,
+        city: str | None = None,
+        notes: bool = False,
+        own_occupation: str | None = None,
+    ) -> str:
+        """Break occupation + place + year combinations: occupation to sector, barrio to city, year vague.
+
+        notes: free text of a person's own row, where a capitalized occupation opening a sentence is theirs.
+        own_occupation: that row's occupation; its head word ("conductor" of "conductor de plataforma") counts too.
+        """
         if not text or not detect.OCCUPATIONS:
             return text
         folded = fold(text)
-        occ = [m for m in detect.OCCUPATIONS.finditer(folded) if _occupation_mention(text, m.start(), m.end())]
+        sector_by_fold = {fold(k): v for k, v in OCCUPATION_SECTOR.items()}
+        occ: list[tuple[int, int, str]] = []
+        for m in detect.OCCUPATIONS.finditer(folded):
+            if _occupation_mention(text, m.start(), m.end(), notes):
+                occ.append((m.start(), m.end(), sector_by_fold[" ".join(m.group(0).split())]))
+        head = _occupation_head(own_occupation)
+        if head:
+            sector = sector_by_fold.get(fold(own_occupation.strip()), "profesional independiente")
+            for m in re.finditer(rf"(?<![a-z]){re.escape(head)}(?![a-z])", folded):
+                if all(m.end() <= s or m.start() >= e for s, e, _ in occ) and _occupation_mention(text, m.start(), m.end(), notes):
+                    occ.append((m.start(), m.end(), sector))
         if not occ:
             return text
         barrios = [m for m in self.barrio_rx.finditer(folded) if text[m.start()].isupper()] if self.barrio_rx else []
@@ -563,10 +607,8 @@ class Engine:
         if not (barrios or years or location_hint or cities):
             return text
         spans = []
-        sector_by_fold = {fold(k): v for k, v in OCCUPATION_SECTOR.items()}
-        for m in occ:
-            sector = sector_by_fold[" ".join(m.group(0).split())]
-            spans.append((m.start(), m.end(), sector[:1].upper() + sector[1:] if text[m.start()].isupper() else sector))
+        for s, e, sector in occ:
+            spans.append((s, e, sector[:1].upper() + sector[1:] if text[s].isupper() else sector))
         for m in barrios:
             spans.append((m.start(), m.end(), self.barrio_city.get(m.group(0), city or text[m.start() : m.end()])))
         for m in years:
@@ -580,16 +622,25 @@ class Engine:
         return out
 
 
-def _occupation_mention(text: str, start: int, end: int) -> bool:
+def _occupation_mention(text: str, start: int, end: int, notes: bool = False) -> bool:
     """Lowercase occupations count anywhere. A capitalized one only opens a sentence and is followed by
-    punctuation ("Arquitecto, cliente desde 2022."), so job titles in tables and signatures stay."""
+    punctuation ("Arquitecto, cliente desde 2022."), so job titles in tables and signatures stay; in a
+    person's own notes it only has to open one."""
     if text[start].islower():
         return True
     line_start = text.rfind("\n", 0, start) + 1
     if text[line_start:start].lstrip().startswith("|"):
         return False
-    opens = not text[:start].strip() or re.search(r"[.!?:\n]\s*$", text[:start])
-    return bool(opens and re.match(r"\s*[,.;:]", text[end:]))
+    opens = not text[:start].strip() or re.search(r"[.!?:;\n]\s*$", text[:start])
+    return bool(opens and (notes or re.match(r"\s*[,.;:]", text[end:])))
+
+
+def _occupation_head(occupation: str | None) -> str | None:
+    """Head word of "X de Y" occupations: someone who is "conductor de plataforma" writes "conductor"."""
+    if not occupation or " de " not in occupation:
+        return None
+    head = fold(occupation.strip().split()[0])
+    return head if len(head) >= 5 else None
 
 
 def style_like(surface: str, plain: str, canonical: str) -> str:

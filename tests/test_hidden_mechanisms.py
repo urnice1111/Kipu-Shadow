@@ -32,7 +32,11 @@ def corpus(corpus_dir):
         ),
         client_row("CL-11", nombre_completo="Camila Arango Velásquez", num_doc="1022649507", ciudad="Bogotá"),
         client_row("CL-12", nombre_completo="Camila Arango Mejía", num_doc="1035372961", ciudad="Medellín"),
-        client_row("CL-13", nombre_completo="Ana Ruiz Toro", num_doc="43111222", ciudad="Pasto"),
+        client_row("CL-13", nombre_completo="Ana Ruiz Toro", num_doc="43111222", ciudad="Pasto", ocupacion="periodista"),
+        client_row(
+            "CL-14", nombre_completo="Hugo Lara Peña", num_doc="79111333", ciudad="Cali", fecha_vinculacion="2019-09-27",
+            ocupacion="conductor de plataforma", notas="Chef del restaurante del barrio. Crédito al día, trabaja como conductor.",
+        ),
         {
             "id": "pqrs:PQR-2026-0001", "table": "pqrs",
             "columns": {"radicado": "PQR-2026-0001", "cliente_id": "CL-99", "cedula": "98901449", "ciudad": "Cali",
@@ -76,7 +80,7 @@ def test_initial_and_surname_and_handles(run):
 def test_lowercase_given_name_in_context(run):
     engine, _ = run
     rosa = pid(engine, "CL-10")
-    assert "rosa" not in engine.text("mil gracias rosa", Ctx("x").push(rosa))
+    assert not re.search(r"\brosa\b", engine.text("mil gracias rosa", Ctx("x").push(rosa)))
     assert engine.text("una rosa roja", Ctx("x").push(rosa)) == "una rosa roja"
 
 
@@ -105,6 +109,21 @@ def test_occupation_in_notes_and_capitalized_sentence(run):
     notes = out["clientes:CL-10"]["columns"]["notas"]
     assert "Arquitecta" not in notes and "hace unos años" in notes and notes.startswith("Profesional de la construcción")
     assert out["clientes:CL-10"]["columns"]["ocupacion"] == "profesional de la construcción"
+
+
+def test_occupations_in_own_notes_without_punctuation_and_head_word(run):
+    _, out = run
+    notes = out["clientes:CL-14"]["columns"]["notas"]
+    assert "Chef" not in notes and "conductor" not in notes
+    assert notes.startswith("Profesional de gastronomía del restaurante") and "trabaja como profesional del transporte" in notes
+
+
+def test_homonym_resolved_by_occupation_next_to_name(run):
+    engine, _ = run
+    agent, client = engine.d.by_kp["KP-1"], pid(engine, "CL-13")
+    out = engine.text("Trabajaremos con Ana Ruiz. Es periodista independiente.", Ctx("x", prefer="employee"))
+    assert engine.render_name(client, "all", "first") in out
+    assert engine.render_name(agent, "all", "all") not in out
 
 
 def test_third_party_next_to_known_given_name_and_internal_first_name(run):
