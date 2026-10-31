@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.config import OUTPUT_FILES
+from app.ingestion import check_ids, ingest, write_corpus
+from app.ingestion.client import ApiSource
 
 
 @dataclass
@@ -13,11 +15,28 @@ class RunResult:
     tokens_out: int = 0
 
 
+class PipelineIncomplete(NotImplementedError):
+    """Raised after the stages that exist; carries what they produced so the job can report it."""
+
+    def __init__(self, message: str, result: RunResult):
+        super().__init__(message)
+        self.result = result
+
+
 Pipeline = Callable[[str, str, Path], RunResult]
 
 
 def run_pipeline(sources_url: str, token: str, staging_dir: Path) -> RunResult:
-    raise NotImplementedError("pipeline no implementado (Hito 2)")
+    source = ApiSource(sources_url, token)
+    try:
+        corpus = ingest(source)
+    finally:
+        source.close()
+    check_ids(corpus)
+    write_corpus(corpus, staging_dir)
+    raise PipelineIncomplete(
+        "anonimización no implementada (Hitos 3-5)", RunResult(records=corpus.counts())
+    )
 
 
 def publish(staging_dir: Path, output_dir: Path) -> None:

@@ -100,10 +100,15 @@ class JobRunner:
             shutil.rmtree(staging, ignore_errors=True)
             error = _safe_error(exc, token)
             log.warning("job %s failed: %s", job_id, error)
+            partial = getattr(exc, "result", None)
+            counts = partial.records if partial else {}
             self._update(
                 job_id,
                 status="failed",
                 finished_at=_now(),
+                chats=counts.get("chats", 0),
+                docs=counts.get("docs", 0),
+                tables=counts.get("tables", 0),
                 seconds=round(time.monotonic() - start, 3),
                 error=error,
             )

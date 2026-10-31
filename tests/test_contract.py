@@ -1,7 +1,9 @@
 import json
 import threading
 
+from app import pipeline
 from app.config import OUTPUT_FILES
+from app.ingestion.dirsource import DirSource
 from app.pipeline import RunResult
 from tests.conftest import wait_for
 
@@ -44,18 +46,28 @@ def test_health(client):
     assert r.json() == {"status": "ok", "team": "Kipu Shadow", "version": "0.1.0", "models": []}
 
 
-def test_run_stub_fails_honestly_without_leaking_token(client):
+def test_run_ingests_but_does_not_publish(client, corpus_dir, settings, monkeypatch):
+    seen = {}
+
+    def fake_api(url, token):
+        seen["args"] = (url, token)
+        return DirSource(corpus_dir)
+
+    monkeypatch.setattr(pipeline, "ApiSource", fake_api)
     r = client.post("/v1/run", json=RUN_BODY)
     assert r.status_code == 202
     job_id = r.json()["job_id"]
     body = wait_for(client, job_id)
+    assert seen["args"] == (RUN_BODY["sources_url"], RUN_BODY["token"])
     assert body["status"] == "failed"
-    assert "no implementado" in body["error"]
+    assert "anonimización no implementada" in body["error"]
+    assert body["records"] == {"chats": 5, "docs": 3, "tables": 4}
     assert body["started_at"] and body["finished_at"]
-    assert set(body["records"]) == {"chats", "docs", "tables"}
     assert set(body["cost"]) == {"tokens_in", "tokens_out", "seconds"}
     assert RUN_BODY["token"] not in client.get(f"/v1/run/{job_id}").text
     assert client.get("/v1/output/chats.jsonl").status_code == 404
+    assert not settings.staging_dir.exists()
+    assert not settings.output_dir.exists()
 
 
 def test_run_error_redacts_token(make_client):

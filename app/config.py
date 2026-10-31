@@ -19,6 +19,19 @@ class Settings:
         return self.data_dir / "registry.db"
 
 
+def load_env(path: Path | None = None) -> None:
+    """Load KEY=value lines from .env without overriding the real environment."""
+    path = path or Path(__file__).resolve().parent.parent / ".env"
+    if not path.is_file():
+        return
+    for line in path.read_text("utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
 def get_settings() -> Settings:
     root = Path(__file__).resolve().parent.parent
     return Settings(
