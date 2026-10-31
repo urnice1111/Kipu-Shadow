@@ -100,6 +100,44 @@ def test_plate_in_filename_and_unknown_phone(corpus, registry):
     assert re.fullmatch(r"SOAT_[A-Z]{3}\d{3}_2026\.pdf y mi celular es 3\d\d \d{3} \d{4}", out)
 
 
+def test_migrated_client_row_merges_and_bare_cedula_is_replaced(corpus, registry):
+    grown = copy.deepcopy(corpus)
+    grown.tables.append(
+        {
+            "id": "clientes:PG-1",
+            "table": "clientes",
+            "columns": {
+                "cliente_id": "PG-1",
+                "nombre_completo": "Juan Pérez",
+                "num_doc": "10101010",
+                "ciudad": "Bogotá",
+                "notas": "migrado",
+            },
+        }
+    )
+    grown.chats.append(
+        {
+            "id": "m-ced",
+            "thread_id": "soporte:9.9",
+            "author": "Juan Pérez",
+            "ts": "9.9",
+            "text": "10.101.010",
+            "attachments": [],
+        }
+    )
+    engine, outputs, entities = run(grown, registry)
+    assert engine.d.by_clid["CL-1"] == engine.d.by_clid["PG-1"]
+    assert "10101010" not in engine.d.ambiguous_cedulas
+    chats = {r["id"]: r for r in outputs["chats"]}
+    assert "10101010" not in chats["m-ced"]["text"]
+    rows = {r["id"]: r["columns"] for r in outputs["tables"]}
+    assert rows["clientes:CL-1"]["cliente_id"] == "CL-1"
+    assert rows["clientes:PG-1"]["cliente_id"] == "PG-1"
+    assert rows["clientes:CL-1"]["num_doc"] == rows["clientes:PG-1"]["num_doc"]
+    report = audit(outputs, entities)
+    assert not any(leak["original"] == "10101010" for leak in report.leaks), report.leaks
+
+
 def test_live_batch_of_fifty_under_a_minute(make_client, corpus_dir, monkeypatch):
     from app import pipeline
     from tests.conftest import wait_for

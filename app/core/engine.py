@@ -336,7 +336,13 @@ class Engine:
     def _number(self, run: str, start: int, folded: str, ctx: Ctx) -> str | None:
         d = digits(run)
         core = d[2:] if len(d) == 12 and d.startswith("57") else d
-        pid = self.d.by_cedula.get(d) if d not in self.d.ambiguous_cedulas else None
+        pid = self.d.by_cedula.get(d)
+        if pid and d in self.d.ambiguous_cedulas:
+            for cand in ctx.pids:
+                person = self.d.persons.get(cand)
+                if person and d in person.cedulas:
+                    pid = cand
+                    break
         if pid:
             new = self.cedula_for(pid, d)
             self._hit(pid, ctx, run, "cedula", new)

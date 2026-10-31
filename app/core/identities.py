@@ -173,7 +173,15 @@ class Directory:
 
     def add_client_row(self, row_id: str, cols: dict[str, str]) -> Person:
         clid = cols.get("cliente_id", "")
-        person = Person(pid=f"cl:{clid}", kind="client", rows={row_id})
+        email = (cols.get("correo") or "").strip().lower()
+        cedula = digits(cols.get("num_doc") or "")
+        phone = _phone_digits(cols.get("celular") or "")
+        existing = self.by_clid.get(clid) or self.find_strong(
+            emails=[email] if email else [],
+            cedulas=[cedula] if cedula else [],
+            phones=[phone] if phone else [],
+        )
+        person = Person(pid=existing or f"cl:{clid}", kind="client", rows={row_id})
         person.add_name(cols.get("nombre_completo", ""))
         _add_strong(person, cols.get("correo"), cols.get("num_doc"), cols.get("celular"))
         if cols.get("direccion"):
@@ -294,7 +302,7 @@ class Directory:
             push(self.by_email.get(m.lower()))
         for m in DIGIT_RUN.findall(text):
             d = digits(m)
-            if d in self.by_cedula and d not in self.ambiguous_cedulas:
+            if d in self.by_cedula:
                 push(self.by_cedula[d])
             phone = d[2:] if len(d) == 12 and d.startswith("57") else d
             push(self.by_phone.get(phone))
