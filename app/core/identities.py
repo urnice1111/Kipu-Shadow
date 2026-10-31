@@ -11,11 +11,24 @@ from dataclasses import dataclass, field
 from app.core.lexicon import GIVEN, SURNAME_SET, gender_of
 from app.core.text import digits, fold, norm_name
 
-CL_ID = re.compile(r"\bCL-\d{3,}\b")
+CL_ID = re.compile(r"\b(?:CL|PG)-\d{3,}\b")
 KP_ID = re.compile(r"\bKP-\d{2,}\b")
 PQR_ID = re.compile(r"\bPQR-\d{4}-\d{3,}\b")
 EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 DIGIT_RUN = re.compile(r"\+?\d(?:[ .\-/]?\d)+")
+# Business keys that tie a mention to one customer: credit request, credit number, plate.
+EVIDENCE_TOKEN = re.compile(r"(?<![A-Za-z0-9])(?:S-\d{4}-\d{2}|\d{4}-\d{4}|[A-Z]{3}-?\d{3})(?![A-Za-z0-9])")
+CEDULA_SUFFIX = re.compile(
+    r"(?:terminad[ao]s? en|termina en|finaliza en|ultimos (?:4|cuatro)(?: digitos)?(?: de (?:la|su|tu) cedula)?(?: son)?:?)\s*(\d{3,4})(?!\d)"
+)
+MONTH_NUM = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6, "julio": 7, "agosto": 8,
+    "septiembre": 9, "setiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
+}
+WORD = re.compile(r"[a-z]+")
+STOPWORDS = {"del", "con", "por", "para", "desde", "los", "las", "una", "uno", "que", "sin", "mas", "hacia"}
+DAY_MONTH = re.compile(r"(?<!\d)(\d{1,2}) de (" + "|".join(MONTH_NUM) + r")\b")
+AMOUNT_MENTION = re.compile(r"(?<![\d.,])\$?\s?(\d{1,3}(?:\.\d{3})+|\d{5,})(?![\d.,]\d)")
 
 
 def split_name(name: str) -> tuple[list[str], list[str]]:
@@ -123,6 +136,8 @@ class Directory:
         self.by_address: dict[str, str] = {}
         self.by_birth: dict[str, set[str]] = defaultdict(set)
         self.ambiguous_cedulas: set[str] = set()
+        self.by_token: dict[str, set[str]] = defaultdict(set)
+        self.by_txday: dict[str, list[tuple[str, str, frozenset]]] = defaultdict(list)
 
     # --- building -----------------------------------------------------------------------
 
@@ -281,6 +296,61 @@ class Directory:
         person.add_name(name)
         return self.add(person)
 
+    def index_business_rows(self, rows: list[dict]) -> None:
+        """Amounts, days and business keys of each customer's rows: tie-breakers for homonyms."""
+        for rec in rows:
+            cols = rec["columns"]
+            pid = self.by_clid.get(cols.get("cliente_id", ""))
+            if not pid:
+                continue
+            if rec["table"] == "transacciones" and len(cols.get("fecha", "")) >= 10:
+                own = {fold(t) for n in self.persons[pid].names for t in n.split()}
+                words = frozenset(
+                    w for w in WORD.findall(fold(cols.get("descripcion", ""))) if len(w) >= 3 and w not in own and w not in STOPWORDS
+                )
+                self.by_txday[cols["fecha"][5:10]].append((pid, digits(cols.get("monto", "")), words))
+            for k in ("descripcion", "respuesta", "notas"):
+                for tok in EVIDENCE_TOKEN.findall(cols.get(k, "")):
+                    self.by_token[_token_key(tok)].add(pid)
+
+    def evidence(self, text: str, folded: str) -> list[tuple[str, int, int, bool]]:
+        """(pid, start, end, strong) for every identifier in text that points to a known person."""
+        out: list[tuple[str, int, int, bool]] = []
+        for rx, index in ((CL_ID, self.by_clid), (KP_ID, self.by_kp)):
+            for m in rx.finditer(text):
+                if index.get(m.group(0)):
+                    out.append((index[m.group(0)], m.start(), m.end(), True))
+        for m in PQR_ID.finditer(text):
+            for pid in self.by_radicado.get(m.group(0), ()):
+                out.append((pid, m.start(), m.end(), True))
+        for m in EMAIL.finditer(text):
+            if self.by_email.get(m.group(0).lower()):
+                out.append((self.by_email[m.group(0).lower()], m.start(), m.end(), True))
+        for m in DIGIT_RUN.finditer(text):
+            d = digits(m.group(0))
+            phone = d[2:] if len(d) == 12 and d.startswith("57") else d
+            for pid in (self.by_cedula.get(d), self.by_phone.get(phone)):
+                if pid:
+                    out.append((pid, m.start(), m.end(), True))
+        by_token = getattr(self, "by_token", {})
+        for m in EVIDENCE_TOKEN.finditer(text):
+            for pid in by_token.get(_token_key(m.group(0)), ()):
+                out.append((pid, m.start(), m.end(), True))
+        for m in CEDULA_SUFFIX.finditer(folded):
+            for pid, p in self.persons.items():
+                if any(c.endswith(m.group(1)) for c in p.cedulas):
+                    out.append((pid, m.start(), m.end(), True))
+        # A day alone is weak: it counts when the text also gives that transaction's amount or a
+        # word of its description ("el PSE ... del 3 de septiembre").
+        amounts = {digits(m.group(1)) for m in AMOUNT_MENTION.finditer(text)}
+        words = set(WORD.findall(folded))
+        for m in DAY_MONTH.finditer(folded):
+            day = f"{MONTH_NUM[m.group(2)]:02d}-{int(m.group(1)):02d}"
+            for pid, amount, desc in getattr(self, "by_txday", {}).get(day, ()):
+                if (amount and amount in amounts) or (desc & words):
+                    out.append((pid, m.start(), m.end(), False))
+        return out
+
     # --- lookups ------------------------------------------------------------------------
 
     def pids_in_text(self, text: str) -> list[str]:
@@ -307,6 +377,11 @@ class Directory:
             phone = d[2:] if len(d) == 12 and d.startswith("57") else d
             push(self.by_phone.get(phone))
         return found
+
+
+def _token_key(tok: str) -> str:
+    """Plates are written with or without a dash; credit and request numbers keep theirs."""
+    return tok.replace("-", "") if re.fullmatch(r"[A-Z]{3}-?\d{3}", tok) else tok
 
 
 def _add_strong(person: Person, email, cedula, phone) -> None:
@@ -409,4 +484,5 @@ def build_directory(corpus) -> Directory:
     }
     evidence = thread_evidence(corpus.chats, corpus.chat_meta, radicado_clients)
     directory.add_slack_users(corpus.users, evidence)
+    directory.index_business_rows(corpus.tables)
     return directory

@@ -21,6 +21,43 @@ DATE = re.compile(
 )
 
 
+MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+_MONTH_ALT = "|".join(MONTH_NAMES + ["setiembre"])
+# "18 de octubre de 1983", "octubre 18 de 1983"
+PROSE_DATE = re.compile(
+    rf"(?<!\d)(?:(?P<d>\d{{1,2}})\s+de\s+(?P<m>{_MONTH_ALT})|(?P<m2>{_MONTH_ALT})\s+(?P<d2>\d{{1,2}}))"
+    rf"\s*(?:,|de|del)?\s+(?P<y>19\d\d|20[0-2]\d)(?!\d)",
+    re.IGNORECASE,
+)
+
+
+def prose_date_iso(m: re.Match) -> str | None:
+    month = (m.group("m") or m.group("m2")).lower()
+    month = "septiembre" if month == "setiembre" else month
+    day = int(m.group("d") or m.group("d2"))
+    if not 1 <= day <= 31:
+        return None
+    return f"{m.group('y')}-{MONTH_NAMES.index(month) + 1:02d}-{day:02d}"
+
+
+def prose_date_like(iso: str, m: re.Match) -> str:
+    """Write an ISO date in the same words, casing and order as the matched prose date."""
+    y, mo, d = iso.split("-")
+    out = m.group(0)
+    day_key, month_key = ("d", "m") if m.group("d") else ("d2", "m2")
+    old_month = m.group(month_key)
+    new_month = MONTH_NAMES[int(mo) - 1]
+    new_month = new_month.capitalize() if old_month[:1].isupper() else new_month
+    old_day = m.group(day_key)
+    new_day = d if len(old_day) == 2 else str(int(d))
+    repl = {"y": y, month_key: new_month, day_key: new_day}
+    base = m.start()
+    for key in sorted(repl, key=lambda k: m.start(k), reverse=True):
+        s, e = m.start(key) - base, m.end(key) - base
+        out = out[:s] + repl[key] + out[e:]
+    return out
+
+
 def date_to_iso(m: re.Match) -> str | None:
     if m.group("y"):
         return f"{m.group('y')}-{m.group('m')}-{m.group('d')}"
@@ -63,6 +100,24 @@ NOT_PLATE_PREFIX = {
     "IVA", "SMS", "PDF", "RUT", "API", "SLA", "NPS", "OTP", "PIN", "ATM", "DIAN", "EPM", "CDT", "GMF",
 }
 PASSPORT = re.compile(r"(?<![A-Za-z0-9])[A-Z]{1,2}\d{6,8}(?![A-Za-z0-9])")
+
+_UP = "A-ZÁÉÍÓÚÜÑ"
+_LO = "a-záéíóúüñ"
+# "M. Jiménez", "A. Marulanda Hoyos": an initial and one or two capitalized surnames.
+INITIAL_NAME = re.compile(rf"(?<![{_UP}{_LO}\w.])([{_UP}])\.\s?([{_UP}][{_LO}]{{2,}})(?:\s([{_UP}][{_LO}]{{2,}}))?")
+HANDLE_TOKEN = re.compile(r"(?<![\w.])@([a-z][a-z0-9._]{2,}[a-z0-9])")
+# Before a single given name: it names a place ("San Fernando", "Santa Mónica") or a quoted title.
+PLACE_OR_QUOTE_BEFORE = re.compile(r"(?:\bsan|\bsanta|\bsanto|['\"“‘«])\s*$")
+# Role cues glued to the name: "te atiende X", "X, agente de onboarding", "a nombre de X", "X (clienta".
+AGENT_BEFORE = re.compile(r"(?:te atiende|te paso con|te comunico con|te transfiero con|habla con)\s*$")
+AGENT_AFTER = re.compile(r"^\s*[,(]?\s*(?:agente|asesora?|del equipo|de soporte|de cobros|de onboarding|de fraude)\b")
+CLIENT_BEFORE = re.compile(r"(?:a nombre de|la cuenta de|el credito de|clienta?|titular)\s*$")
+CLIENT_AFTER = re.compile(r"^\s*[,(]?\s*(?:clienta?|titular)\b")
+SENTENCE_END = re.compile(r"[.!?\n]")
+GREETING_BEFORE = re.compile(
+    r"(?:gracias|hola|buenas|buenos dias|buenas tardes|buenas noches|chao|hey|oye|querid[ao]|senora?|don|dona|"
+    r"estimad[ao]|te paso con|habla con|con)[\s,!.:¡]*$"
+)
 
 YEAR = re.compile(r"(?<![\d\-/.])(?:19[4-9]\d|20[0-2]\d)(?![\d\-/])")
 

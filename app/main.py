@@ -9,6 +9,7 @@ from app.core.registry import Registry
 from app.jobs import JobRunner
 from app.live import LiveService
 from app.pipeline import Pipeline, make_pipeline, published_file
+from app.requestlog import RequestLogMiddleware
 from app.schemas import (
     RECORD_MODELS,
     AnonymizeRequest,
@@ -83,4 +84,6 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     app = FastAPI(title="Kipu Shadow", version=VERSION)
     app.include_router(router)
+    if settings.log_dir:
+        app.add_middleware(RequestLogMiddleware, path=settings.log_dir / "requests.jsonl")
     return app

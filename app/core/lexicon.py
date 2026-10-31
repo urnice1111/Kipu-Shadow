@@ -98,6 +98,15 @@ OCCUPATION_SECTOR = {
     "contadora": "profesional de finanzas",
     "diseñador gráfico": "profesional de las industrias creativas",
     "diseñadora gráfica": "profesional de las industrias creativas",
+    "diseñador": "profesional de las industrias creativas",
+    "diseñadora": "profesional de las industrias creativas",
+    "contador público": "profesional de finanzas",
+    "contadora pública": "profesional de finanzas",
+    "ingeniero": "profesional de ingeniería",
+    "ingeniera": "profesional de ingeniería",
+    "ingeniero industrial": "profesional de ingeniería",
+    "ingeniera industrial": "profesional de ingeniería",
+    "estudiante": "estudiante universitario",
     "docente": "profesional de la educación",
     "profesor": "profesional de la educación",
     "profesora": "profesional de la educación",
@@ -143,6 +152,29 @@ NOT_NAME_WORDS = {
 def folded_set(words) -> set[str]:
     return {fold(w) for w in words}
 
+
+WEEKDAYS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+MONTHS = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre",
+    "noviembre", "diciembre",
+]
+ROLE_WORDS = """agente analista coordinador coordinadora gerente director directora abogado abogada contador
+contadora auditor auditora socio socia representante legal externo externa senior junior líder jefe jefa
+asesor asesora ingeniero ingeniera""".split()
+NOT_NAME_WORDS = (
+    folded_set(NOT_NAME_WORDS)
+    | folded_set(WEEKDAYS + MONTHS + ROLE_WORDS)
+    | {w for k in OCCUPATION_SECTOR for w in folded_set(k.split())}
+)
+
+# Given names that are also everyday words: lowercase, they only count as names right after a greeting.
+COMMON_WORD_NAMES = folded_set(
+    """rosa luz pilar paz alba gloria victoria esperanza consuelo amparo dolores mercedes soledad cruz
+    ángel ángeles rocío milagros socorro concepción belén reyes salvador domingo fe flor azucena margarita
+    violeta aurora celeste clemente franco blanca cielo estrella sol perla nieves leal dulce linda bella
+    marina justo fidel modesto prudencia libertad patria inocencio feliz alegría rey mar alma paloma jade
+    abril julio clara tomás marco césar pastor santos león rosario gracia iris rubí""".split()
+)
 
 FEMALE = folded_set(FEMALE_NAMES)
 MALE = folded_set(MALE_NAMES)

@@ -124,6 +124,17 @@ class JobRunner:
             tokens_out=result.tokens_out,
             seconds=round(time.monotonic() - start, 3),
         )
+        self._archive(job_id)
+
+    def _archive(self, job_id: str) -> None:
+        """Keep a copy of each published output; the next run overwrites output/."""
+        if not self.settings.log_dir:
+            return
+        target = self.settings.log_dir / "runs" / f"{_now().replace(':', '')}_{job_id}"
+        try:
+            shutil.copytree(self.settings.output_dir, target)
+        except OSError as exc:
+            log.warning("no se pudo archivar la salida de %s: %s", job_id, exc)
 
     def status(self, job_id: str) -> RunStatus | None:
         with self._connect() as db:

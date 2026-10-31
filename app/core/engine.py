@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 from app.core import detect
 from app.core.identities import Directory, Person, split_name
-from app.core.lexicon import GIVEN, KEPT_TERMS, OCCUPATION_SECTOR, ROLE_EMAIL_LOCALS, SURNAME_SET
+from app.core.lexicon import COMMON_WORD_NAMES, GIVEN, KEPT_TERMS, OCCUPATION_SECTOR, ROLE_EMAIL_LOCALS, SURNAME_SET
 from app.core.registry import (
     Registry,
     make_address,
@@ -79,6 +79,10 @@ class Engine:
             self.name_rx = re.compile(rf"(?<![a-z0-9])(?:{body})(?![a-z0-9@])")
         else:
             self.name_rx = None
+        self.by_initial: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for pid, p in self.d.persons.items():
+            if p.given and p.surnames:
+                self.by_initial[(fold(p.given[0])[0], fold(p.surnames[0]))].append(pid)
         handles = [h for h in self.d.by_handle if len(h) >= 5]
         self.handle_rx = (
             re.compile(r"(?<![\w.])(?:" + "|".join(map(re.escape, sorted(handles, key=len, reverse=True))) + r")(?![\w@])")
@@ -235,6 +239,11 @@ class Engine:
                 new = self._birth(m, ctx)
                 if new:
                     claim(m.start(), m.end(), new)
+        for m in detect.PROSE_DATE.finditer(text):
+            if free(m.start(), m.end()):
+                new = self._birth(m, ctx, prose=True)
+                if new:
+                    claim(m.start(), m.end(), new)
         for m in detect.DIGIT_RUN.finditer(text):
             if free(m.start(), m.end()):
                 claim(m.start(), m.end(), self._number(m.group(0), m.start(), folded, ctx))
@@ -256,17 +265,47 @@ class Engine:
                     if claim(m.start(), m.end(), new):
                         self._hit(pid, ctx, text[m.start() : m.end()], "handle", new)
 
-        # 6. names of known (and discovered) people
+        # 6. names of known (and discovered) people, then initials and @handles built from names
+        named: list[str] = []
+        last_owner: dict[tuple, tuple[str, int]] = {}
         if self.name_rx:
             for m in self.name_rx.finditer(folded):
                 surface = text[m.start() : m.end()]
-                resolved = self._resolve_name(m.group(0), surface, ctx)
+                key = tuple(re.split(SEP, m.group(0)))
+                resolved = self._resolve_name(m.group(0), surface, ctx, detect.preceding(folded, m.start(), 25), text, m.start(), m.end())
+                prev = last_owner.get(key)
+                if resolved and prev and not detect.SENTENCE_END.search(text[prev[1] : m.start()]):
+                    # The same ambiguous name twice in one sentence names two different people.
+                    others = sorted({c[0] for c in self.forms.get(key, []) if not c[3]} - {prev[0]})
+                    if prev[0] == resolved[0] and len(others) == 1:
+                        alt = next(c for c in self.forms[key] if c[0] == others[0])
+                        resolved = (alt[0], alt[1], alt[2])
                 if resolved:
                     pid, gsel, ssel = resolved
                     plain = self.render_name(pid, gsel, ssel)
                     new = style_like(surface, plain, self.d.persons[pid].canonical)
                     if claim(m.start(), m.end(), new):
                         self._hit(pid, ctx, surface, "name", plain)
+                        named.append(pid)
+                        if len({c[0] for c in self.forms.get(key, []) if not c[3]}) >= 2:
+                            last_owner[key] = (pid, m.end())
+        for m in detect.INITIAL_NAME.finditer(text):
+            resolved = self._resolve_initial(m, ctx)
+            if resolved:
+                pid, end, two = resolved
+                parts = self.name_parts(pid)
+                new = f"{parts['given'][0][0]}. {parts['surnames'][0]}" + (f" {parts['surnames'][1]}" if two else "")
+                if claim(m.start(), end, new):
+                    self._hit(pid, ctx, text[m.start() : end], "initial", new)
+                    named.append(pid)
+        for m in detect.HANDLE_TOKEN.finditer(text):
+            if not free(m.start(), m.end()):
+                continue
+            pid = self._handle_owner(m.group(1), named + ctx.pids)
+            if pid:
+                new = "@" + self.handle_for(pid, m.group(1))
+                if claim(m.start(), m.end(), new):
+                    self._hit(pid, ctx, m.group(0), "handle", new[1:])
 
         # 7. organizations, places and public figures we keep on purpose
         if detect.KEPT:
@@ -282,23 +321,127 @@ class Engine:
             out = out[:s] + new + out[e:]
         return out
 
-    def _resolve_name(self, matched: str, surface: str, ctx: Ctx):
+    def _resolve_name(self, matched: str, surface: str, ctx: Ctx, before: str = "", text: str = "", start: int = 0, end: int = 0):
         key = tuple(re.split(SEP, matched))
         cands = self.forms.get(key, [])
+        upper = surface[:1].isupper()
+        owners = {c[0] for c in cands}
+        if len(owners) >= 2 and text:
+            pid = self._evidence_owner(text, start, end, owners) if len(key) >= 2 else None
+            if pid:
+                c = next(c for c in cands if c[0] == pid)
+                return c[0], c[1], c[2]
+            pre, post = fold(text[max(0, start - 25) : start]), fold(text[end : end + 30])
+            if detect.AGENT_BEFORE.search(pre) or detect.AGENT_AFTER.search(post):
+                kind = "employee"
+            elif detect.CLIENT_BEFORE.search(pre) or detect.CLIENT_AFTER.search(post):
+                kind = "client"
+            else:
+                kind = None
+            if kind:
+                same_kind = [c for c in cands if self.d.persons[c[0]].kind == kind]
+                if same_kind:
+                    cands = same_kind
         in_ctx = [c for c in cands if c[0] in ctx.pids]
         if in_ctx:
             in_ctx.sort(key=lambda c: ctx.pids.index(c[0]))
             pid, gsel, ssel, ctx_only = in_ctx[0]
-            if ctx_only and not surface[:1].isupper():
-                return None
+            if ctx_only and not upper:
+                common = len(key) == 1 and key[0] in COMMON_WORD_NAMES
+                if common and not detect.GREETING_BEFORE.search(before):
+                    return None
             return pid, gsel, ssel
-        loose = [c for c in cands if not c[3] or (len(key) >= 2 and surface[:1].isupper())]
-        if not loose:
+        loose = [c for c in cands if not c[3] or (len(key) >= 2 and upper)]
+        if loose:
+            preferred = "emp" if ctx.prefer == "employee" else "cl"
+            loose.sort(key=lambda c: (c[3], c[0].split(":")[0] != preferred, c[0]))
+            pid, gsel, ssel, _ = loose[0]
+            return pid, gsel, ssel
+        # A bare capitalized first name in internal text names a colleague when only one employee has it.
+        if ctx.prefer == "employee" and upper and len(key) == 1 and not detect.PLACE_OR_QUOTE_BEFORE.search(before):
+            emps = [c for c in cands if self.d.persons[c[0]].kind == "employee"]
+            if len({c[0] for c in emps}) == 1:
+                pid, gsel, ssel, _ = emps[0]
+                return pid, gsel, ssel
+        return None
+
+    def _evidence_owner(self, text: str, start: int, end: int, owners: set[str]) -> str | None:
+        """The candidate whose identifier sits closest to the mention, in its table row or paragraph."""
+        lo, hi = max(0, start - 90), min(len(text), end + 70)
+        line_lo = text.rfind("\n", 0, start) + 1
+        line_hi = text.find("\n", end)
+        line_hi = len(text) if line_hi == -1 else line_hi
+        if text[line_lo:start].lstrip().startswith("|"):
+            lo, hi = line_lo, line_hi
+        else:
+            para = text.rfind("\n\n", lo, start)
+            lo = para if para != -1 else lo
+            para = text.find("\n\n", end, hi)
+            hi = para if para != -1 else hi
+        window = text[lo:hi]
+        best: dict[bool, dict[str, int]] = {True: {}, False: {}}
+        for pid, s, e, strong in self.d.evidence(window, fold(window)):
+            if pid not in owners:
+                continue
+            s, e = s + lo, e + lo
+            dist = start - e if e <= start else (s - end) + 15 if s >= end else 0
+            if dist < best[strong].get(pid, 10**6):
+                best[strong][pid] = dist
+        for strong in (True, False):
+            ranked = sorted(best[strong].items(), key=lambda kv: kv[1])
+            if ranked and (len(ranked) == 1 or ranked[0][1] < ranked[1][1]):
+                return ranked[0][0]
+        return None
+
+    def _resolve_initial(self, m: re.Match, ctx: Ctx):
+        """Owner of "M. Jiménez": a person in context, else the only person with that initial and surname."""
+        cands = self.by_initial.get((fold(m.group(1)), fold(m.group(2))), [])
+        if not cands:
             return None
-        preferred = "emp" if ctx.prefer == "employee" else "cl"
-        loose.sort(key=lambda c: (c[3], c[0].split(":")[0] != preferred, c[0]))
-        pid, gsel, ssel, _ = loose[0]
-        return pid, gsel, ssel
+        in_ctx = [pid for pid in ctx.pids if pid in cands]
+        pid = in_ctx[0] if in_ctx else (cands[0] if len(cands) == 1 else None)
+        if not pid:
+            return None
+        p = self.d.persons[pid]
+        two = bool(m.group(3)) and len(p.surnames) > 1 and fold(m.group(3)) == fold(p.surnames[1])
+        return pid, (m.end(3) if two else m.end(2)), two
+
+    def _handle_owner(self, handle: str, preferred: list[str]) -> str | None:
+        """Person whose name builds this handle (arojas, ana.rojas, ana_rojas), preferring those just named."""
+        h = handle.lower()
+
+        def builds(p: Person) -> bool:
+            if not (p.given and p.surnames):
+                return False
+            g, s = strip_accents(fold(p.given[0])), strip_accents(fold(p.surnames[0]))
+            return h in (g[0] + s, f"{g}.{s}", f"{g}_{s}", g + s)
+
+        for pid in preferred:
+            if pid and pid in self.d.persons and builds(self.d.persons[pid]):
+                return pid
+        owners = [pid for pid, p in self.d.persons.items() if builds(p)]
+        return owners[0] if len(owners) == 1 else None
+
+    def named_pids(self, text: str) -> list[str]:
+        """People named without ambiguity in a text: a multi-word name with one owner, or a known handle."""
+        found: list[str] = []
+        if not text:
+            return found
+        folded = fold(text)
+        if self.name_rx:
+            for m in self.name_rx.finditer(folded):
+                key = tuple(re.split(SEP, m.group(0)))
+                owners = {c[0] for c in self.forms.get(key, []) if not c[3]}
+                if len(key) >= 2 and len(owners) == 1:
+                    pid = owners.pop()
+                    if pid not in found:
+                        found.append(pid)
+        if self.handle_rx:
+            for m in self.handle_rx.finditer(folded):
+                pid = self.d.by_handle.get(m.group(0))
+                if pid and pid not in found:
+                    found.append(pid)
+        return found
 
     def _email(self, email: str, ctx: Ctx, surface: str | None = None) -> str:
         surface = surface or email
@@ -315,8 +458,8 @@ class Engine:
         self._attach(ctx, surface, "email", new)
         return new
 
-    def _birth(self, m: re.Match, ctx: Ctx) -> str | None:
-        iso = detect.date_to_iso(m)
+    def _birth(self, m: re.Match, ctx: Ctx, prose: bool = False) -> str | None:
+        iso = detect.prose_date_iso(m) if prose else detect.date_to_iso(m)
         pids = self.d.by_birth.get(iso or "")
         if not pids:
             return None
@@ -326,7 +469,7 @@ class Engine:
             return None
         new = self.birth_for(pid, iso)
         self._hit(pid, ctx, m.group(0), "birth_iso", new)
-        return detect.iso_like(new, m)
+        return detect.prose_date_like(new, m) if prose else detect.iso_like(new, m)
 
     def _address(self, pid: str, surface: str, ctx: Ctx) -> str:
         new = self.address_for(pid, surface)
@@ -384,7 +527,8 @@ class Engine:
         folded = fold(text)
         blocked = []
         if self.name_rx:
-            blocked += [(m.start(), m.end()) for m in self.name_rx.finditer(folded)]
+            # A known given name alone ("Kelly") must not hide an unknown full name ("Kelly Marulanda").
+            blocked += [(m.start(), m.end()) for m in self.name_rx.finditer(folded) if len(re.split(SEP, m.group(0))) >= 2]
         if detect.KEPT:
             blocked += [(m.start(), m.end()) for m in detect.KEPT.finditer(folded)]
         blocked += [(m.start(), m.end()) for m in detect.EMAIL.finditer(text)]
@@ -397,12 +541,20 @@ class Engine:
 
     # --- quasi-identifiers ----------------------------------------------------------------
 
+    def has_place_or_year(self, text: str) -> bool:
+        folded = fold(text)
+        return bool(
+            detect.YEAR.search(text)
+            or (self.city_rx and self.city_rx.search(folded))
+            or (self.barrio_rx and any(text[m.start()].isupper() for m in self.barrio_rx.finditer(folded)))
+        )
+
     def generalize(self, text: str, location_hint: bool = False, city: str | None = None) -> str:
         """Break occupation + place + year combinations: occupation to sector, barrio to city, year vague."""
         if not text or not detect.OCCUPATIONS:
             return text
         folded = fold(text)
-        occ = [m for m in detect.OCCUPATIONS.finditer(folded) if text[m.start()].islower()]
+        occ = [m for m in detect.OCCUPATIONS.finditer(folded) if _occupation_mention(text, m.start(), m.end())]
         if not occ:
             return text
         barrios = [m for m in self.barrio_rx.finditer(folded) if text[m.start()].isupper()] if self.barrio_rx else []
@@ -413,7 +565,8 @@ class Engine:
         spans = []
         sector_by_fold = {fold(k): v for k, v in OCCUPATION_SECTOR.items()}
         for m in occ:
-            spans.append((m.start(), m.end(), sector_by_fold[" ".join(m.group(0).split())]))
+            sector = sector_by_fold[" ".join(m.group(0).split())]
+            spans.append((m.start(), m.end(), sector[:1].upper() + sector[1:] if text[m.start()].isupper() else sector))
         for m in barrios:
             spans.append((m.start(), m.end(), self.barrio_city.get(m.group(0), city or text[m.start() : m.end()])))
         for m in years:
@@ -425,6 +578,18 @@ class Engine:
                 out = out[:s] + new + out[e:]
                 last = s
         return out
+
+
+def _occupation_mention(text: str, start: int, end: int) -> bool:
+    """Lowercase occupations count anywhere. A capitalized one only opens a sentence and is followed by
+    punctuation ("Arquitecto, cliente desde 2022."), so job titles in tables and signatures stay."""
+    if text[start].islower():
+        return True
+    line_start = text.rfind("\n", 0, start) + 1
+    if text[line_start:start].lstrip().startswith("|"):
+        return False
+    opens = not text[:start].strip() or re.search(r"[.!?:\n]\s*$", text[:start])
+    return bool(opens and re.match(r"\s*[,.;:]", text[end:]))
 
 
 def style_like(surface: str, plain: str, canonical: str) -> str:

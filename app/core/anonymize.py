@@ -97,7 +97,8 @@ def anonymize_chats(engine: Engine, chats: list[dict], meta: dict[str, dict] | N
             pid = author_pid(engine, m, meta)
             if pid and pid not in pids:
                 pids.append(pid)
-        for pid in d.pids_in_text("\n".join(m.get("text", "") for m in msgs)):
+        thread_text = "\n".join(m.get("text", "") for m in msgs)
+        for pid in d.pids_in_text(thread_text) + engine.named_pids(thread_text):
             if pid not in pids:
                 pids.append(pid)
         thread_ctx[tid] = pids
@@ -106,7 +107,9 @@ def anonymize_chats(engine: Engine, chats: list[dict], meta: dict[str, dict] | N
     for rec in chats:
         apid = author_pid(engine, rec, meta)
         mentions = [d.by_uid.get(u) for u in meta.get(rec["id"], {}).get("mentions", [])]
-        ctx = Ctx(rec["id"]).push(apid, *mentions, *d.pids_in_text(rec.get("text", "")), *thread_ctx[rec["thread_id"]])
+        internal = not rec["thread_id"].startswith("soporte-")
+        ctx = Ctx(rec["id"], prefer="employee" if internal else "client")
+        ctx.push(apid, *mentions, *d.pids_in_text(rec.get("text", "")), *thread_ctx[rec["thread_id"]])
         new = dict(rec)
         new["text"] = engine.generalize(engine.text(rec.get("text", ""), ctx))
         new["attachments"] = [{**a, "filename": engine.text(a.get("filename", ""), ctx)} for a in rec.get("attachments", [])]
@@ -149,11 +152,14 @@ def anonymize_docs(engine: Engine, docs: list[dict]) -> list[dict]:
     out = []
     for rec in docs:
         everything = "\n".join([rec.get("title", ""), rec.get("body", ""), rec.get("filename", "")] + list(rec.get("metadata", {}).values()))
-        ctx = Ctx(rec["id"], prefer="employee").push(*engine.d.pids_in_text(everything))
+        ctx = Ctx(rec["id"], prefer="employee").push(*engine.d.pids_in_text(everything), *engine.named_pids(everything))
         new = dict(rec)
         new["title"] = engine.text(rec.get("title", ""), ctx)
         body = engine.text(rec.get("body", ""), ctx)
-        new["body"] = "\n\n".join(engine.generalize(p) for p in body.split("\n\n"))
+        # The judge reads the whole document: an occupation in one paragraph and a year or place in
+        # another still sit in the same record.
+        placed = engine.has_place_or_year(body)
+        new["body"] = "\n\n".join(engine.generalize(p, location_hint=placed) for p in body.split("\n\n"))
         new["filename"] = engine.text(rec.get("filename", ""), ctx)
         new["metadata"] = {k: engine.text(v, ctx) for k, v in rec.get("metadata", {}).items()}
         out.append(new)
@@ -262,8 +268,9 @@ def _client_row(engine: Engine, row_id: str, cols: dict) -> dict:
     if cols.get("ocupacion"):
         cols["ocupacion"] = SECTOR_BY_FOLD.get(fold(cols["ocupacion"]).strip(), "profesional independiente")
     if cols.get("notas"):
+        # The row itself carries city and join date, so any occupation in the notes completes the triple.
         nctx = Ctx(row_id).push(pid, *engine.d.pids_in_text(cols["notas"]))
-        cols["notas"] = engine.text(cols["notas"], nctx)
+        cols["notas"] = engine.generalize(engine.text(cols["notas"], nctx), location_hint=True, city=cols.get("ciudad"))
     return cols
 
 
@@ -298,6 +305,8 @@ def _pqrs_row(engine: Engine, row_id: str, cols: dict) -> dict:
         owner = d.by_cedula.get(ced) or pid
         if owner:
             cols["cedula"] = _cedula(engine, owner, ctx, cols["cedula"])
+        elif ced:
+            cols["cedula"] = pour_digits(cols["cedula"], engine.cedula_for(None, ced))
     if cols.get("agente") and agent:
         new = engine.handle_for(agent, cols["agente"])
         engine._hit(agent, ctx, cols["agente"], "handle", new)
