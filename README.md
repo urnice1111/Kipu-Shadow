@@ -10,7 +10,7 @@ Reto: "Vende los datos sin vender a la gente" (Frontier). Enunciado completo en 
 |---|---|---|
 | 1 | 60 % del set | 95 / 125 |
 | 2 | 75 % del set | 146 / 156 |
-| 3 | 100 % del set | pendiente |
+| 3 | 100 % del set | 193 / 205 |
 
 Todas las corridas son posteriores a la migración de Págalo: 10.856 registros (2.999 chats, 34 documentos, 7.823 filas). Un `/run` completo tarda unos 42 s y usa 0 tokens.
 
